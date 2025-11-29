@@ -21,19 +21,23 @@ This project implements image blending using Laplacian Pyramids. The goal is to 
 
 ## Algorithm: Laplacian Pyramid Blending
 
-### 1. Preprocessing
-1.  Load Image A and Image B.
-2.  Convert both to grayscale.
-3.  Resize/Crop images to the nearest common power-of-two dimensions.
-4.  Prepare the Mask to match these dimensions.
+### 1. Preprocessing & Interaction
+1.  Load Image A, Image B, and the Mask.
+2.  Convert all to grayscale.
+3.  **Interactive Selection**: Display Image A and Image B to the user. The user clicks a point on each image to define the **center** where the mask should be applied.
+4.  **Snippet Extraction**:
+    *   Determine the bounding box of the Mask.
+    *   Extract a snippet from Image A centered at the user's click, matching the Mask's dimensions.
+    *   Extract a snippet from Image B centered at the user's click, matching the Mask's dimensions.
+    *   *Note*: Ensure the snippet dimensions are a power of two (pad/crop the mask and snippets if necessary) for the pyramid.
 
 ### 2. Pyramid Construction
 *   **Kernel**: Use a **5x5 Gaussian kernel** (separable approximation: `[1, 4, 6, 4, 1] / 16`).
 *   **Depth**: Build levels until the smallest dimension is approximately **16x16**.
 *   **Structures**:
-    *   **Gaussian Pyramid** for the Mask ($G_M$).
-    *   **Laplacian Pyramid** for Image A ($L_A$).
-    *   **Laplacian Pyramid** for Image B ($L_B$).
+    *   **Gaussian Pyramid** for the Mask Snippet ($G_M$).
+    *   **Laplacian Pyramid** for Image A Snippet ($L_A$).
+    *   **Laplacian Pyramid** for Image B Snippet ($L_B$).
 *   **Downsampling**: Each level is 1/4 the size of the previous (decimate by 2 in both X and Y).
 
 ### 3. Blending
@@ -41,11 +45,10 @@ For each level $k$:
 $$L_{out}^{(k)} = G_M^{(k)} \cdot L_A^{(k)} + (1 - G_M^{(k)}) \cdot L_B^{(k)}$$
 *   Perform element-wise weighted averaging using the mask's Gaussian level.
 
-### 4. Reconstruction
-1.  Start with the coarsest blended level.
-2.  Upsample (expand) and add the next finer blended level.
-3.  Repeat until the full resolution is reached.
-4.  Clip values to valid range [0, 1] or [0, 255].
+### 4. Reconstruction & Planting
+1.  Collapse the blended Laplacian pyramid to form the **Blended Snippet**.
+2.  **Planting**: Paste the **Blended Snippet** back into **Image A** at the original selected coordinates.
+3.  Clip values to valid range [0, 1] or [0, 255].
 
 ### 5. Analysis
 *   Compute the **Fourier Magnitude** of the final blended result.
