@@ -70,7 +70,6 @@ def crop_around_center(img, center, size):
         
         padded[dst_r_start:dst_r_end, dst_c_start:dst_c_end] = cropped
         return padded
-        
     return cropped
 
 def create_laplacian_geocian (img1, img2, mask):
@@ -98,7 +97,8 @@ def create_laplacian_geocian (img1, img2, mask):
     final_cut = mixture_laplacian_pyr[0]
     for i in range(1,len(mixture_laplacian_pyr)):
         final_cut = mixture_laplacian_pyr[i]+upsample(final_cut)
-    return final_cut
+    pyramyd_dict = {"img_1_geucian_pyr":img_1_geucian_pyr,"img_2_geucian_pyr":img_2_geucian_pyr,"mask_geucian_pyr":mask_geucian_pyr,"img1_laplacian_pyr":img1_laplacian_pyr,"img2_laplacian_pyr":img2_laplacian_pyr,"mixture_laplacian_pyr":mixture_laplacian_pyr}
+    return final_cut, pyramyd_dict
 
 
 def upsample (img):
@@ -108,33 +108,66 @@ def upsample (img):
     # returns the upsampled image and the next image in the geucian pyr
     kernel_geucian_row = np.array([[1,4,6,4,1]])/16
     kernel_geucian_col = np.array([[1],[4],[6],[4],[1]])/16
-    up = np.zeros((img.shape[0]*2, img.shape[1]*2))
-    up[::2, ::2] = img
+    
+    # Pad the small image with edge values to handle boundaries correctly
+    # This avoids black borders ('fill') and artifacts ('symm' on sparse array)
+    padded_img = np.pad(img, ((1,1), (1,1)), mode='edge')
+    
+    # Upsample (insert zeros)
+    up = np.zeros((padded_img.shape[0]*2, padded_img.shape[1]*2))
+    up[::2, ::2] = padded_img
+    
+    # Convolve
     up = sp.signal.convolve2d(up, kernel_geucian_row, mode='same', boundary='fill', fillvalue=0)
     up = sp.signal.convolve2d(up, kernel_geucian_col, mode='same', boundary='fill', fillvalue=0)
-    return up*4
     
+    # Crop the center to remove the padding effects
+    # We added 1 pixel on each side of small img -> 2 pixels on each side of upsampled img
+    # So we crop [2:-2, 2:-2]
+    return up[2:-2, 2:-2] * 4
+
+def create_hybrid_image(img1, img2):
+    ratio = 1
+    row_geucian_kernel = np.array([[1,4,6,4,1]])/16 
+    col_geucian_kernel = np.array([[1],[4],[6],[4],[1]])/16 
+    # Convolve with self to expand kernel (increase blur)
+    # mode='full' allows the kernel to grow (e.g. 5x5 -> 9x9 -> 17x17 -> 33x33)
+    # We loop 1 time to get a moderate kernel size (9x9)
+    for _ in range(1):
+        row_geucian_kernel = sp.signal.convolve2d(row_geucian_kernel, row_geucian_kernel, mode='full')
+        col_geucian_kernel = sp.signal.convolve2d(col_geucian_kernel, col_geucian_kernel, mode='full')
     
-def geucian_layer(img):
+    # Normalize to ensure brightness stays constant
+    row_geucian_kernel /= row_geucian_kernel.sum()
+    col_geucian_kernel /= col_geucian_kernel.sum()
+    far_image_blurry = geucian_layer(img1, row_geucian_kernel, col_geucian_kernel, ratio)
+    close_image_detail = img2-geucian_layer(img2, row_geucian_kernel, col_geucian_kernel, ratio)
+    return far_image_blurry+close_image_detail
+    
+
+    
+def geucian_layer(img, kernel_geucian_row = np.array([[1,4,6,4,1]])/16, kernel_geucian_col = np.array([[1],[4],[6],[4],[1]])/16, down_sample_ratio = 2):
     # recieves an image and returns a downsampled by 4 image
     # uses convolution with the geucian kernel in both axis
     # uses the downsampled image to calculate the next image in the geucian pyr
     # returns the downsampled image and the next image in the geucian pyr
-    
-    kernel_geucian_row = np.array([[1,4,6,4,1]])/16
-    kernel_geucian_col = np.array([[1],[4],[6],[4],[1]])/16
     img_blured = sp.signal.convolve2d(img, kernel_geucian_row, mode='same', boundary='fill', fillvalue=0)
     img_blured = sp.signal.convolve2d(img_blured, kernel_geucian_col, mode='same', boundary='fill', fillvalue=0)
-    img_downsampled = np.zeros((img.shape[0]//2, img.shape[1]//2))
-    img_downsampled = img_blured[::2, ::2]
+    img_downsampled = np.zeros((img.shape[0]//down_sample_ratio, img.shape[1]//down_sample_ratio))
+    img_downsampled = img_blured[::down_sample_ratio, ::down_sample_ratio]
     return img_downsampled
 
+def turn__2_rgb(img):
+    if img.shape[2] == 3:
+        return sk.color.rgb2gray(img)
+    if img.shape[2] == 4:
+        return sk.color.rgb2gray(sk.color.rgba2rgb(img))
+    return img
 def load_image(path):
     img = plt.imread(path)
     # Normalize to 0-1 if integer
     if img.dtype == np.uint8:
         img = img.astype(np.float64) / 255.0
-        
     if img.ndim == 2:
         return img
     elif img.ndim == 3:
@@ -147,11 +180,30 @@ def load_image(path):
     else:
         raise ValueError(f"Unsupported image dimension: {img.ndim}")
 
+def save_specific_pyrs(pyr_blue, pyr_green, pyr_red,name):
+    for i in range(len(pyr_blue)):
+        # for j in range(i):
+        #     pyr_red[i] = upsample(pyr_red[i])
+        #     pyr_green[i] = upsample(pyr_green[i])
+        #     pyr_blue[i] = upsample(pyr_blue[i])
+        pyr_red[i] = sk.transform.resize(pyr_red[i], (256, 256), order=0, anti_aliasing=False)
+        pyr_green[i] = sk.transform.resize(pyr_green[i], (256, 256), order=0, anti_aliasing=False)
+        pyr_blue[i] = sk.transform.resize(pyr_blue[i], (256, 256), order=0, anti_aliasing=False)
+        pyr_red[i] = np.clip(pyr_red[i], 0, 1)
+        pyr_green[i] = np.clip(pyr_green[i], 0, 1)
+        pyr_blue[i] = np.clip(pyr_blue[i], 0, 1)
+        to_save = np.dstack((pyr_red[i], pyr_green[i], pyr_blue[i]))
+        plt.imsave(f"photos/pyramids/{name}_{i}.jpg", to_save)
+    
+def save_all_pyrs(pyrs_blue: dict , pyrs_green: dict, pyrs_red: dict):
+    for name in pyrs_blue.keys():
+        save_specific_pyrs(pyrs_blue[name], pyrs_green[name], pyrs_red[name], name)
+
 def main():
     # 1. Load Images
     try:
         img1 = load_image("photos/image1.jpg") # Background
-        img2 = load_image("photos/image2.jpg") # Object
+        img2 = load_image("photos/grid.jpg") # Object
         mask = load_image("photos/mask.jpg")   # Mask
     except FileNotFoundError as e:
         print(f"Error loading images: {e}")
@@ -204,6 +256,7 @@ def main():
     # 4. Interactive Selection & Background Crop
     print("Please select the center point on Image 1 (Background)...")
     center1 = get_user_point(img1, "Click where to place the object")
+    # center1 = (img1.shape[1]//2, img1.shape[0]//2)
     
     img1_cropped = crop_around_center(img1, center1, img2.shape)
     
@@ -219,20 +272,45 @@ def main():
     plt.imsave("photos/verify_composite.jpg", composite, cmap='gray')
     print("Composite verification saved to photos/verify_composite.jpg")
     
+    # Save Magnitude of the Bad Blend (Cut and Paste)
+    if composite.ndim == 3:
+        gray_composite = sk.color.rgb2gray(composite)
+    else:
+        gray_composite = composite
+    save_magnitude_spectrum(gray_composite, "photos/composite_magnitude.jpg")
+    print("Bad Blend (Composite) Magnitude saved to photos/composite_magnitude.jpg")
+    
     # 5. Run Laplacian Pyramid Blending
     print("Running Laplacian Pyramid Blending...")
-    blended_snippet_red = create_laplacian_geocian(img2[:, :, 0], img1_cropped[:, :, 0], mask[:, :, 0])
-    blended_snippet_green = create_laplacian_geocian(img2[:, :, 1], img1_cropped[:, :, 1], mask[:, :, 1])
-    blended_snippet_blue = create_laplacian_geocian(img2[:, :, 2], img1_cropped[:, :, 2], mask[:, :, 2])
+    blended_snippet_red , pyrs_red= create_laplacian_geocian(img2[:, :, 0], img1_cropped[:, :, 0], mask[:, :, 0])
+    blended_snippet_green , pyrs_green = create_laplacian_geocian(img2[:, :, 1], img1_cropped[:, :, 1], mask[:, :, 1])
+    blended_snippet_blue , pyrs_blue = create_laplacian_geocian(img2[:, :, 2], img1_cropped[:, :, 2], mask[:, :, 2])
     blended_snippet = np.dstack((blended_snippet_red, blended_snippet_green, blended_snippet_blue))
     blended_snippet = np.clip(blended_snippet, 0, 1)
     plt.imsave("photos/blended_snippet.jpg", blended_snippet)
+    save_all_pyrs(pyrs_blue, pyrs_green, pyrs_red)
     
     # 6. Plant Snippet back into Original Image
     final_result = plant_snippet(img1, blended_snippet, center1)
     plt.imsave("photos/final_result.jpg", final_result)
     print("Final full image saved to photos/final_result.jpg")
     
+    #6.2 create a hybrid image of the snippets and save it to photos/hybrid_snippet.jpg
+    grey_img1 = turn__2_rgb(img1_cropped)
+    grey_img2 = turn__2_rgb(img2)
+    hybrid_grey = create_hybrid_image(grey_img2, grey_img1)
+    hybrid_snippet_red = create_hybrid_image(img2[:, :, 0], img1_cropped[:, :, 0])
+    hybrid_snippet_green = create_hybrid_image(img2[:, :, 1], img1_cropped[:, :, 1])
+    hybrid_snippet_blue = create_hybrid_image(img2[:, :, 2], img1_cropped[:, :, 2])
+    hybrid_snippet_red = np.clip(hybrid_snippet_red, 0, 1)
+    hybrid_snippet_green = np.clip(hybrid_snippet_green, 0, 1)
+    hybrid_snippet_blue = np.clip(hybrid_snippet_blue, 0, 1)
+    hybrid_grey = np.clip(hybrid_grey, 0, 1)
+    hybrid_snippet = np.dstack((hybrid_snippet_red, hybrid_snippet_green, hybrid_snippet_blue))
+    plt.imsave("photos/hybrid_grey.jpg", hybrid_grey, cmap='gray')
+    plt.imsave("photos/hybrid_snippet.jpg", hybrid_snippet)
+    print("Hybrid snippet saved to photos/hybrid_snippet.jpg")
+
     # 7. Magnitude Map (Fourier Transform)
     # Convert to grayscale for magnitude map
     if final_result.ndim == 3:
@@ -244,7 +322,7 @@ def main():
 
 def plant_snippet(full_img, snippet, center):
     """
-    Pastes the 'snippet' into 'full_img' centered at 'center', handling edge cases.
+ at 'center', handling edge cases.
     Inverse of crop_around_center.
     """
     img = full_img.copy()
